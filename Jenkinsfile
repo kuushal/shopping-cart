@@ -1,63 +1,102 @@
 pipeline {
     agent any
-    tools{
-        jdk  'jdk11'
-        maven  'maven3'
+
+    tools {
+        maven 'maven3'
+        jdk 'jdk8'
+
     }
-    
+
     environment{
         SCANNER_HOME= tool 'sonar-scanner'
     }
-    
+
     stages {
         stage('Git Checkout') {
             steps {
-                git branch: 'main', changelog: false, credentialsId: '15fb69c3-3460-4d51-bd07-2b0545fa5151', poll: false, url: 'https://github.com/jaiswaladi246/Shopping-Cart.git'
+                git branch: 'main', url: 'https://github.com/kuushal/shopping-cart.git'
+            }
+        }
+        stage('Compile') {
+            steps {
+                bat "mvn compile"
             }
         }
         
-        stage('COMPILE') {
+        stage('Unit Tests') {
             steps {
-                sh "mvn clean compile -DskipTests=true"
+                bat 'mvn test'
             }
         }
         
-        stage('OWASP Scan') {
-            steps {
-                dependencyCheck additionalArguments: '--scan ./ ', odcInstallation: 'DP'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+        stage('SonarQube Analysis') {
+            tools {
+                jdk 'jdk11'            
             }
-        }
-        
-        stage('Sonarqube') {
             steps {
-                withSonarQubeEnv('sonar-server'){
-                   sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Shopping-Cart \
-                   -Dsonar.java.binaries=. \
-                   -Dsonar.projectKey=Shopping-Cart '''
-               }
-            }
-        }
-        
-        stage('Build') {
-            steps {
-                sh "mvn clean package -DskipTests=true"
-            }
-        }
-        
-        stage('Docker Build & Push') {
-            steps {
-                script{
-                    withDockerRegistry(credentialsId: '2fe19d8a-3d12-4b82-ba20-9d22e6bf1672', toolName: 'docker') {
-                        
-                        sh "docker build -t shopping-cart -f docker/Dockerfile ."
-                        sh "docker tag  shopping-cart adijaiswal/shopping-cart:latest"
-                        sh "docker push adijaiswal/shopping-cart:latest"
-                    }
+                withSonarQubeEnv('sonar') {
+                     bat 'mvn sonar:sonar'
+                //   bat " $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=Shopping-Cart -Dsonar.projectName=Shopping-Cart -Dsonar.java.binaries=. "
                 }
             }
         }
         
+        stage('OWASP') {
+            steps {
+                dependencyCheck additionalArguments: ' --scan ./', odcInstallation: 'DC'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+
+          stage('Build') {
+            steps {
+                bat 'mvn package'
+            }
+        }
+
+          stage('Deploy the artifact to Nexus') {
+            steps {
+                withMaven(globalMavenSettingsConfig: 'global-maven', jdk: 'jdk8', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                    bat "mvn deploy"
+                }
+            }
+        }
+
+          stage('Build & Tag Docker Image') {
+            steps {
+               script {
+                   withDockerRegistry(credentialsId: 'docker-credentials') {
+                        bat 'docker build -t virigo3782/shopping-cart:latest -f docker/Dockerfile .'
+                        
+                    }
+               }
+            }
+        }
+
+         stage('Trivy scan') {
+            steps {
+                bat 'trivy image virigo3782/shopping-cart:latest > trivy-report.txt'
+            }
+        }  
+    
+         stage('Push Docker Image to docker registry') {
+            steps {
+               script {
+                   withDockerRegistry(credentialsId: 'docker-credentials') {
+                        bat 'docker push virigo3782/shopping-cart'
+                        
+                    }
+               }
+            }
+        }
+        
+        stage('Deploy to kubernetes a') {
+            steps {
+                script{
+                     bat 'kubectl apply -f deploymentservice.yml'
+                }
+            }
+        }  
         
     }
 }
